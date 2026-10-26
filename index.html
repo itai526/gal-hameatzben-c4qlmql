@@ -8,12 +8,13 @@
 <meta property="og:title" content="גל המעצבן">
 <meta property="og:description" content="משחק מים בתלת ממד בדפדפן: 20 עולמות, 4 בוסים, 20 נשקים, ומשחק ביחד עם עד 4 חברים בקוד.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://itai526.github.io/gal-hameatzben/">
-<meta property="og:image" content="https://itai526.github.io/gal-hameatzben/img/hero.jpg">
+<meta property="og:url" content="https://itai526.github.io/gal-hameatzben-c4qlmql/">
+<meta property="og:image" content="https://itai526.github.io/gal-hameatzben-c4qlmql/img/hero.jpg">
 <meta property="og:image:width" content="1440">
 <meta property="og:image:height" content="738">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#cfe9ff">
+<meta name="robots" content="noindex, nofollow">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Karantina:wght@400;700&display=swap">
@@ -9153,7 +9154,7 @@ function netOverlays(){
 
 // ---- the co-op screens ----
 // The public copy of the game, where anyone can join with a code.
-const SITE_URL='';
+const SITE_URL='https://itai526.github.io/gal-hameatzben-c4qlmql/';
 function coopReady(){ return !!NET.room||P2P.ok===true||(!NET.inClaude&&P2P.ok===false); }
 function siteNote(el,text){
   el.textContent=text+' ';
@@ -9165,8 +9166,8 @@ function coopAvail(){
   $('#createBtn').disabled=!ok||NET.busy; $('#joinBtn').disabled=!ok||NET.busy; $('#codeIn').disabled=!ok;
   const off=$('#coopOff');
   if(probing){ off.hidden=false; off.textContent='בודק את החיבור…'; }
-  else if(NET.inClaude && !NET.room){ off.hidden=false; off.textContent='משחק ביחד עובד כאן רק למי שמחובר ל-Claude וקיבל הזמנה לדף הזה. כרגע אין חיבור, נסו לרענן את הדף.'; }
-  else if(NET.inClaude){ off.hidden=false; off.textContent='כאן מצטרפים חברים שמחוברים ל-Claude וקיבלו הזמנה לדף הזה.'; }
+  else if(NET.inClaude && !NET.room){ off.hidden=false; siteNote(off,'כאן אפשר לשחק ביחד רק עם מי שמחובר ל-Claude ומוזמן למשחק. כדי לשחק עם כל חבר, עברו'); }
+  else if(NET.inClaude){ off.hidden=false; siteNote(off,'כאן מצטרפים רק חברים שמחוברים ל-Claude ומוזמנים למשחק. חברים בלי Claude? עברו'); }
   else if(P2P.ok===false){ off.hidden=false; off.textContent='לא הצלחתי להגיע לשירות החיבור. בדוק את החיבור לאינטרנט ונסה שוב.'; }
   else off.hidden=true;
 }
