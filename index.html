@@ -47,6 +47,9 @@ html{height:100%;box-sizing:border-box;background:var(--sky);overflow:hidden}
 body{position:relative;height:100%;margin:0;overflow:hidden;background:var(--sky);color:var(--ink);font-family:var(--f-body);font-size:15px;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
 #game{position:absolute;inset:0;touch-action:none}
 #game canvas{display:block;width:100%;height:100%;touch-action:none;outline:none}
+/* A gentle grade over the 3D view: a touch more colour and contrast, and a soft vignette that pulls the eye to the middle. */
+body:not(.touch) #game canvas{filter:saturate(1.12) contrast(1.06)}
+#game::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 75% 70% at 50% 46%,rgba(28,36,66,0) 60%,rgba(28,36,66,.2) 100%)}
 body.playing:not(.touch) #game canvas{cursor:crosshair}
 button{font:inherit;color:inherit}
 :focus-visible{outline:3px solid var(--water);outline-offset:3px}
@@ -1109,11 +1112,11 @@ function loadWorld(i){
   Object.assign(ARENA,{hw:Wd.hw,hd:Wd.hd,wallH:Wd.wallH,front:Wd.front});
   BX=ARENA.hw-0.5; BZ=ARENA.hd-0.5; REFILL=Wd.refill;
   skyMat.uniforms.top.value.setHex(Wd.sky[0]); skyMat.uniforms.bot.value.setHex(Wd.sky[1]);
-  scene.fog.color.setHex(Wd.fog); scene.fog.far=Wd.fogFar;
+  scene.fog.color.setHex(Wd.fog); scene.fog.far=Wd.fogFar; scene.fog.near=Wd.fogFar*0.24;
   hemi.intensity=Wd.hemi; sun.intensity=Wd.sun; sun.color.setHex(Wd.sunCol);
   const s=Math.max(Wd.hw,Wd.hd)+8; Object.assign(sun.shadow.camera,{left:-s,right:s,top:s,bottom:-s}); sun.shadow.camera.updateProjectionMatrix();
   Wd.build();
-  refillFx();
+  refillFx(); upgradeWater(worldRoot); setMotes(i);
   loadedWorld=i;
 }
 function refillFx(){
@@ -1147,6 +1150,7 @@ function waterTex(base,line){
       g.stroke();
     }
   });
+  const bc=new THREE.Color(base); t.image.__water=true; t.image.__waterBase=bc.r*0.299+bc.g*0.587+bc.b*0.114;
   t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(1.5,1.5); return t;
 }
 function textTex(w,h,draw){ const t=canvasTex(w,h,draw); if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>{ const c=t.srcCanvas; draw(c.getContext('2d'),w,h); t.needsUpdate=true; }); return t; }
@@ -1154,7 +1158,7 @@ function ground(o){
   const outside=new THREE.Mesh(new THREE.PlaneGeometry(700,700),M(o.outside)); outside.rotation.x=-Math.PI/2; outside.position.y=-0.03; outside.receiveShadow=true; worldRoot.add(outside);
   const walk=new THREE.Mesh(new THREE.PlaneGeometry(ARENA.hw*2+5,ARENA.hd*2+5),M(o.walk)); walk.rotation.x=-Math.PI/2; walk.position.y=-0.02; walk.receiveShadow=true; worldRoot.add(walk);
   if(o.rep){ o.tex.wrapS=o.tex.wrapT=THREE.RepeatWrapping; o.tex.repeat.set(o.rep[0],o.rep[1]); }
-  const floor=new THREE.Mesh(new THREE.PlaneGeometry(ARENA.hw*2+0.6,ARENA.hd*2+0.6),toon({map:o.tex})); floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; worldRoot.add(floor);
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(ARENA.hw*2+0.6,ARENA.hd*2+0.6),floorShade(toon({map:o.tex}),ARENA.hw+0.3,ARENA.hd+0.3)); floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; worldRoot.add(floor);
 }
 function grass(o){
   const blade=new THREE.ConeGeometry(0.05,0.3,3,1); blade.translate(0,0.15,0);
@@ -2505,7 +2509,7 @@ function buildRooftop(){
   const tex=tileTex('#d9dbde','#b1b5bb',8,7,(g,W,H)=>{ g.globalAlpha=0.07; for(let i=0;i<6;i++){ g.fillStyle='#3a3c42'; g.beginPath(); g.ellipse(Math.random()*W,Math.random()*H,rand(16,50),rand(10,30),Math.random()*3,0,7); g.fill(); } g.globalAlpha=1; });
   const below=new THREE.Mesh(new THREE.PlaneGeometry(900,900),M(0x4a4f5e)); below.rotation.x=-Math.PI/2; below.position.y=-26; worldRoot.add(below);
   tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set((hw*2+1.4)/7,(hz*2+1.4)/7);
-  const floor=new THREE.Mesh(new THREE.PlaneGeometry(hw*2+1.4,hz*2+1.4),toon({map:tex})); floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; worldRoot.add(floor);
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(hw*2+1.4,hz*2+1.4),floorShade(toon({map:tex}),hw+0.7,hz+0.7)); floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; worldRoot.add(floor);
   const side=new THREE.Mesh(BOX(hw*2+1.4,26,hz*2+1.4),M(0xe9e1d2)); side.position.y=-13.02; worldRoot.add(side);
   parapet();
   [[-13,-12.5],[-7,-12.5],[8,-12.8],[-16,10.5],[15,9.5],[3,12.8]].forEach((a,i)=>solarHeater(a[0],a[1],i%2?0.15:-0.1));
@@ -3804,7 +3808,7 @@ function buildJaffa(){
   // the paving runs on past the play area to the warehouses behind it
   const fw=hw*2+44, fd=hz*2+26.6;
   tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(fw/10,fd/10);
-  const floor=new THREE.Mesh(new THREE.PlaneGeometry(fw,fd),toon({map:tex})); floor.rotation.x=-Math.PI/2; floor.position.set(0,0,edge+fd/2); floor.receiveShadow=true; worldRoot.add(floor);
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(fw,fd),floorShade(toon({map:tex}),999,999)); floor.rotation.x=-Math.PI/2; floor.position.set(0,0,edge+fd/2); floor.receiveShadow=true; worldRoot.add(floor);
   [[-13,hz+9.5,'נמל יפו'],[13,hz+9.5,'דגים טריים']].forEach(a=>warehouse(a[0],a[1],a[2]));
   [[-24,hz+3],[24,hz+3]].forEach(a=>palm(a[0],a[1]));
   jaffaSea(edge);
@@ -5557,6 +5561,7 @@ function splash(pos,size){
   if(tiny){ water.emit(pos.x,Math.max(0.1,pos.y),pos.z,3,1.6,2,0.4,0.6); if(onLawn(pos)&&Math.random()<0.25) addDecal(pos.x,pos.z,0.35,4); return; }
   water.emit(pos.x,Math.max(0.1,pos.y),pos.z,big?22:12,big?5.5:3.5,big?6:4,0.7,big?1.2:0.9);
   foam.emit(pos.x,Math.max(0.1,pos.y),pos.z,big?10:5,big?3.5:2.2,big?5:3.5,0.5,1);
+  if(pos.y<0.7) addCrown(pos.x,pos.z,big?1.3:0.85);
   if(onLawn(pos)){ addDecal(pos.x,pos.z,big?0.9:0.6,6); addRing(pos.x,pos.z,big?1.5:1); }
   sfx.splash();
 }
@@ -7415,7 +7420,7 @@ function resetWorldFx(){
   for(let i=projs.length-1;i>=0;i--) freeProj(i);
   bananas.forEach(b=>{ b.m.visible=false; bananaPool.push(b.m); }); bananas.length=0;
   decals.forEach(d=>{ d.life=0; d.m.visible=false; });
-  water.clear(); paperBits.clear(); foam.clear(); dust.clear(); smoke.clear(); embers.clear(); rings.forEach(R=>{ R.m.visible=false; }); clearWaves(); clearFx3(); clearFx4();
+  water.clear(); paperBits.clear(); foam.clear(); dust.clear(); smoke.clear(); embers.clear(); rings.forEach(R=>{ R.m.visible=false; }); clearWaves(); clearFx3(); clearFx4(); crowns.forEach(c=>{ c.m.visible=false; });
 }
 function setupWorld(i){
   clearTrapBubbles(); loadWorld(i); W=WORLDS[i]; WP=WEAPONS[W.weapon]; G.world=i; botLine.visible=false; suckFan.visible=false; dinoRing.visible=false; cancelHold(); clearPups();
@@ -9247,6 +9252,168 @@ $('#leaveBtn').addEventListener('click',async()=>{ await netLeave(); showCoopHom
 $('#copyBtn').addEventListener('click',()=>{ const c=NET.code.toUpperCase(); try{ navigator.clipboard.writeText(c).then(()=>{ $('#copyBtn').textContent='הועתק'; setTimeout(()=>{ $('#copyBtn').textContent='העתק'; },1400); },()=>{}); }catch(e){} });
 $('#coopWorlds').addEventListener('click',e=>{ const b=e.target.closest('.wcard'); if(!b||b.disabled) return; NET.sel=+b.dataset.w; renderCoopWorlds(); setupWorld(NET.sel); G.attractT=0.6; attract(0); pushPresence(true); });
 $('#coopStart').addEventListener('click',()=>{ if(NET.role==='host') netStartRound(NET.sel); });
+// ---------- Visual polish ----------
+// Soft contact shadows that sit every character on the ground, water with two drifting ripple layers that glint
+// where they cross, and a shared clock for both. Runs once per frame from visualTick().
+
+// Contact shadow: a soft ink-coloured disc right under the feet, kept on the ground while the character hops.
+const BLOB_TEX=canvasTex(128,128,(g)=>{
+  const r=g.createRadialGradient(64,64,0,64,64,64);
+  r.addColorStop(0,'rgba(28,36,66,0.9)'); r.addColorStop(0.42,'rgba(28,36,66,0.55)'); r.addColorStop(0.75,'rgba(28,36,66,0.16)'); r.addColorStop(1,'rgba(28,36,66,0)');
+  g.fillStyle=r; g.fillRect(0,0,128,128);
+});
+const BLOB_MAT=new THREE.MeshBasicMaterial({map:BLOB_TEX,transparent:true,depthWrite:false,opacity:0.5,fog:false,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2});
+BLOB_MAT.userData.shared=true;
+const BLOB_GEO=new THREE.PlaneGeometry(1,1); BLOB_GEO.rotateX(-Math.PI/2);
+// Footprint radius in the model's own units, for the characters that are not person-sized.
+const BLOB_R={ship:2.05,dino:1.35,galbot:1.2,camel:1.0,snowy:0.72};
+for(const k in BLOB_R) if(CHARS[k]) CHARS[k].blobR=BLOB_R[k];
+function blobFor(P){
+  if(!P||!P.root) return;
+  let b=P.blob;
+  if(!b){
+    b=new THREE.Mesh(BLOB_GEO,BLOB_MAT); b.renderOrder=1; b.userData.noInk=true; b.userData.isInk=true; b.castShadow=false; b.receiveShadow=false;
+    const r=P.blobR||0.6; b.scale.set(r*2,1,r*2); P.root.add(b); P.blob=b;
+  }
+  const s=P.root.scale.y||1; b.position.y=(0.025-P.root.position.y)/s;
+}
+
+// Water: every texture made by waterTex() is marked on its canvas, so clones are found too.
+const WATER_T={value:0};
+const WATER_FRAG=`#ifdef USE_MAP
+  vec4 texelColor=texture2D(map,vUv);
+  vec4 tB=texture2D(map,vUv*1.37+vec2(-wT*0.021,wT*0.013)+0.31);
+  float la=dot(texelColor.rgb,vec3(0.299,0.587,0.114)), lb=dot(tB.rgb,vec3(0.299,0.587,0.114));
+  vec3 wc=max(texelColor.rgb,mix(texelColor.rgb,tB.rgb,0.7));
+  float glint=smoothstep(0.025,0.11,min(la,lb)-wBase);
+  wc+=vec3(0.5)*glint;
+  diffuseColor.rgb*=wc; diffuseColor.a*=texelColor.a;
+#endif`;
+function waterBefore(sh){
+  sh.uniforms.wT=WATER_T; sh.uniforms.wBase={value:this.userData.wBase||0.4};
+  sh.fragmentShader='uniform float wT;\nuniform float wBase;\n'+sh.fragmentShader.replace('#include <map_fragment>',WATER_FRAG);
+}
+function upgradeWater(root){
+  root.traverse(o=>{
+    if(!o.isMesh||o.userData.isInk) return;
+    const list=Array.isArray(o.material)?o.material:[o.material];
+    for(const m of list){
+      if(!m||!m.map||!m.map.image||!m.map.image.__water||m.userData.waterUp) continue;
+      m.userData.waterUp=true; m.userData.wBase=m.map.image.__waterBase;
+      m.onBeforeCompile=waterBefore; m.needsUpdate=true;
+    }
+  });
+}
+
+function visualTick(dt){
+  WATER_T.value=G.clock; updateCrowns(dt); shadowFollow(); updateMotes(dt);
+  blobFor(player.P);
+  for(const e of enemies) blobFor(e.P);
+  for(const r of NET.remotes.values()) if(r.P) blobFor(r.P);
+}
+
+// Floors: very bright floors are toned down so the characters read against them, the floor darkens softly toward the
+// arena's edge (where the walls and fences stand), and a slow large-scale variation breaks up big flat areas.
+function floorShade(mat,hw,hd){
+  mat.onBeforeCompile=sh=>{
+    sh.uniforms.fHalf={value:new THREE.Vector2(hw,hd)};
+    sh.vertexShader='varying vec2 vFloorPos;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\n  vFloorPos=position.xy;');
+    sh.fragmentShader='uniform vec2 fHalf;\nvarying vec2 vFloorPos;\n'+sh.fragmentShader.replace('#include <map_fragment>',`#include <map_fragment>
+  float fLum=dot(diffuseColor.rgb,vec3(0.299,0.587,0.114));
+  diffuseColor.rgb*=mix(1.0,0.84,smoothstep(0.55,0.97,fLum));
+  vec2 fq=abs(vFloorPos)/fHalf; float fEdge=max(fq.x,fq.y);
+  diffuseColor.rgb*=1.0-0.17*smoothstep(0.78,1.0,fEdge);
+  float fN=sin(vFloorPos.x*0.19+0.7)*sin(vFloorPos.y*0.23+1.3);
+  diffuseColor.rgb*=0.965+0.05*fN;`);
+  };
+  mat.customProgramCacheKey=()=>'floorShade';
+  return mat;
+}
+
+// Splash crowns: a quick ring of water that jumps up where a shot lands on the ground.
+const CROWN_GEO=new THREE.CylinderGeometry(0.55,0.28,0.7,20,1,true); CROWN_GEO.translate(0,0.35,0);
+// Streaky sheet of water: solid at the base, breaking into separate jets toward the top.
+const CROWN_TEX=canvasTex(128,64,(g,w,h)=>{
+  for(let x=0;x<w;x++){
+    const jet=0.35+0.65*Math.pow(Math.abs(Math.sin(x*0.29)*Math.sin(x*0.11+1.7)),0.6);
+    for(let y=0;y<h;y++){
+      const v=1-y/h, a=Math.max(0,Math.min(1,(jet*1.25-v)*2.2))*(0.55+0.45*(1-v));
+      g.fillStyle=`rgba(255,255,255,${a.toFixed(3)})`; g.fillRect(x,y,1,1);
+    }
+  }
+});
+const crowns=[];
+for(let i=0;i<12;i++){
+  const m=new THREE.Mesh(CROWN_GEO,new THREE.MeshBasicMaterial({color:0xd8f1ff,map:CROWN_TEX,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide}));
+  m.visible=false; m.renderOrder=2; scene.add(m); crowns.push({m,t:1,s:1});
+}
+let crownIdx=0;
+function addCrown(x,z,s){ const c=crowns[crownIdx++%crowns.length]; c.m.position.set(x,0.02,z); c.m.rotation.y=Math.random()*3; c.t=0; c.s=s; c.m.visible=true; }
+function updateCrowns(dt){
+  for(const c of crowns){
+    if(!c.m.visible) continue;
+    c.t+=dt/0.4; if(c.t>=1){ c.m.visible=false; continue; }
+    const e=1-Math.pow(1-c.t,2), w=c.s*(0.35+e*1.15);
+    c.m.scale.set(w,c.s*Math.sin(c.t*Math.PI)*1.15+0.01,w); c.m.material.opacity=0.78*(1-c.t);
+  }
+}
+
+// Shadows follow the action: while playing, the sun's shadow box is centred just ahead of the camera's focus and kept
+// tight, so shadows are sharper. In the menus it covers the whole arena, as before.
+const SUN_OFF=new V3(-14,28,14), SHB=23, _shC=new V3();
+scene.add(sun.target);
+function shadowFollow(){
+  const cam=sun.shadow.camera;
+  if(G.running){
+    if(cam.right!==SHB){ Object.assign(cam,{left:-SHB,right:SHB,top:SHB,bottom:-SHB}); cam.updateProjectionMatrix(); }
+    const step=SHB*2/sun.shadow.mapSize.x;
+    _shC.set(Math.round(camLook.x/step)*step,0,Math.round((camLook.z-5)/step)*step);
+    sun.position.copy(_shC).add(SUN_OFF); sun.target.position.copy(_shC); sun.target.updateMatrixWorld();
+  } else {
+    const s=Math.max(ARENA.hw,ARENA.hd)+8;
+    if(cam.right!==s){ Object.assign(cam,{left:-s,right:s,top:s,bottom:-s}); cam.updateProjectionMatrix(); }
+    if(sun.target.position.lengthSq()>0){ sun.position.copy(SUN_OFF); sun.target.position.set(0,0,0); sun.target.updateMatrixWorld(); }
+  }
+}
+
+// Air: a few soft specks drifting through each world, picked to suit it (petals in Japan, snow on the Hermon and the
+// rink, bubbles at the water park, sand in the desert, fireflies in the cave...). One draw call, wrapped around the view.
+const MOTE_TEX=canvasTex(64,64,(g)=>{ const r=g.createRadialGradient(32,32,0,32,32,32); r.addColorStop(0,'rgba(255,255,255,1)'); r.addColorStop(0.45,'rgba(255,255,255,0.85)'); r.addColorStop(1,'rgba(255,255,255,0)'); g.fillStyle=r; g.fillRect(0,0,64,64); });
+// kind: [colour, size, count, fall speed (negative rises), sideways drift, wobble, opacity]
+const MOTE_KIND={
+  leaf:[0x8fd16a,0.42,46,0.35,0.6,0.9,0.85], petal:[0xffb6d0,0.44,70,0.45,0.8,1.0,0.95], dust:[0xfff4dc,0.23,60,0.04,0.25,0.35,0.55],
+  snow:[0xffffff,0.39,110,0.9,0.35,0.6,0.95], bubble:[0xd9f2ff,0.52,40,-0.6,0.2,0.5,0.6], sand:[0xf3d39a,0.21,90,0.08,1.6,0.4,0.6],
+  spark:[0xfff7c2,0.26,50,-0.05,0.2,0.6,0.9], confetti:[0xff8fc0,0.34,60,0.5,0.4,1.2,0.95], firefly:[0xd8ff7a,0.36,40,0,0.25,0.8,1],
+  spray:[0xcdebff,0.2,35,0.15,1.0,0.5,0.5], pollen:[0xfff2a0,0.23,60,0.06,0.35,0.6,0.75]
+};
+const MOTE_OF=['leaf','petal','dust','dust','spray','snow','dust','bubble','sand','dust','dust','spark','confetti','firefly','dust','pollen','snow','dust','leaf','spray'];
+const MOTE_MAX=110;
+const moteGeo=new THREE.BufferGeometry(); moteGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(MOTE_MAX*3),3));
+const moteMat=new THREE.PointsMaterial({map:MOTE_TEX,size:0.15,transparent:true,depthWrite:false,opacity:0.8,sizeAttenuation:true});
+const motes=new THREE.Points(moteGeo,moteMat); motes.frustumCulled=false; motes.renderOrder=3; scene.add(motes);
+const MOTE={kind:null,n:0,p:[]};
+function setMotes(i){
+  const k=MOTE_KIND[MOTE_OF[i]]||MOTE_KIND.dust;
+  if(MOTE.kind===k) return; MOTE.kind=k;
+  moteMat.color.setHex(k[0]); moteMat.size=k[1]; moteMat.opacity=k[6];
+  MOTE.n=Math.round(k[2]*(COARSE?0.6:1)); moteGeo.setDrawRange(0,MOTE.n);
+  MOTE.p=[]; for(let j=0;j<MOTE.n;j++) MOTE.p.push({x:rand(-18,18),y:rand(0.2,7),z:rand(-20,10),ph:Math.random()*6.28});
+}
+function updateMotes(dt){
+  const k=MOTE.kind; if(!k) return;
+  const a=moteGeo.attributes.position.array, cx=camLook.x, cz=camLook.z, t=G.clock;
+  for(let j=0;j<MOTE.n;j++){
+    const q=MOTE.p[j];
+    q.y-=k[3]*dt; q.x+=(k[4]+Math.sin(t*0.7+q.ph)*k[5])*dt; q.z+=Math.cos(t*0.9+q.ph*1.3)*k[5]*0.6*dt;
+    if(q.y<0.05) q.y+=7; else if(q.y>7.2) q.y-=7;
+    let rx=q.x-cx, rz=q.z-cz;
+    if(rx>18) q.x-=36; else if(rx<-18) q.x+=36;
+    if(rz>10) q.z-=30; else if(rz<-20) q.z+=30;
+    a[j*3]=q.x; a[j*3+1]=q.y+(k===MOTE_KIND.firefly?Math.sin(t*2+q.ph)*0.3:0); a[j*3+2]=q.z;
+  }
+  moteGeo.attributes.position.needsUpdate=true;
+  if(k===MOTE_KIND.firefly) moteMat.opacity=0.65+Math.sin(t*3)*0.3;
+}
 // ---------- Update ----------
 function updatePlayer(dt){
   player.det=Math.max(0,player.det-dt); detNote.visible=player.det>0;
@@ -9506,11 +9673,11 @@ function updateCamera(dt){
   if(G.running && !G.over){
     focus.copy(player.pos);
     const n=nearestFoe();
-    const fk=W.boss?0.42:0.28, cap=W.boss?6.5:4.5;
+    const fk=W.boss?0.36:0.24, cap=W.boss?5.0:3.6;
     if(n){ const ox=(n.pos.x-player.pos.x)*fk, oz=(n.pos.z-player.pos.z)*fk, ol=Math.hypot(ox,oz), m=ol>cap?cap/ol:1; focus.x+=ox*m; focus.z+=oz*m; }
     focus.x=clamp(focus.x,-(ARENA.hw-6.5),ARENA.hw-6.5); focus.z=clamp(focus.z,-(ARENA.hd-4.5),ARENA.hd-4.5);
-    const ck=W.camK?(a<1?1+(W.camK-1)*0.45:W.camK):1; tgtPos.copy(focus).add(camOff.set(0,12.5*camF*ck,10.8*camF*ck));
-    tgtLook.set(focus.x,0.8,focus.z-1.2);
+    const ck=W.camK?(a<1?1+(W.camK-1)*0.45:W.camK):1; tgtPos.copy(focus).add(camOff.set(0,(W.boss?11.2:9.1)*camF*ck,(W.boss?10.4:9.9)*camF*ck));
+    tgtLook.set(focus.x,1.0,focus.z-(W.boss?0.5:0.9));
   } else if(G.running && G.over){
     const list=G.result==='win'?enemies:enemies.filter(e=>!e.out), c=groupCenter(G.result!=='win');
     let spread=0; (list.length?list:enemies).forEach(e=>{ spread=Math.max(spread,hd(e.pos,c)); });
@@ -9611,7 +9778,7 @@ function frame(now){
   updateCamera(G.paused&&!G.coop?0:dt);
   if(G.running) updateHUD();
   updateOverlays(G.paused&&!G.coop?0:dt); netOverlays();
-  updateAim();
+  updateAim(); visualTick(dt);
   renderer.render(scene,camera);
 }
 
