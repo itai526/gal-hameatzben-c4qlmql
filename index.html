@@ -8699,12 +8699,14 @@ function p2pLoad(){
 function p2pProbe(){
   if(P2P.ok!==null) return Promise.resolve(P2P.ok);
   if(P2P.probing) return P2P.probing;
-  P2P.probing=p2pLoad().then(Peer=>new Promise(res=>{
+  if(RELAY.ok===false) RELAY.ok=null;
+  // The relay comes first: it works on every network the direct connection does, and on many where it doesn't.
+  P2P.probing=relayProbe().then(r=>r||p2pLoad().then(Peer=>new Promise(res=>{
     if(!Peer){ res(false); return; }
     let done=false, p=null; const fin=v=>{ if(done) return; done=true; try{ p&&p.destroy(); }catch(e){} res(v); };
     try{ p=new Peer(p2pOpts()); p.on('open',()=>fin(true)); p.on('error',()=>fin(false)); }catch(e){ fin(false); }
     setTimeout(()=>fin(false),9000);
-  })).then(v=>{ P2P.ok=!!v; P2P.probing=null; return P2P.ok; });
+  }))).then(v=>{ P2P.ok=!!v; P2P.probing=null; return P2P.ok; });
   return P2P.probing;
 }
 const P2P_MAX_CONNS=7, P2P_IDLE=15000;
@@ -8800,6 +8802,160 @@ function p2pJoin(code,asHost){
   });
 }
 // A guest who could reach both kinds of connection listens on both, and keeps whichever one the host turns out to be on.
+// ---------- Relay connection (works on any network) ----------
+// Direct connections between two browsers fail on many networks, phone networks among them: both sides reach the
+// connection service, but the friend's browser can never open a line to the host's. The relay sends the same messages
+// through free public MQTT servers over an ordinary secure WebSocket instead, so each player only has to reach a server.
+// Every player connects to up to two servers at once and sends to both, so two players always meet when they share
+// one. Each message carries a running number, so an older copy arriving late through the other server is ignored.
+const RELAY_URLS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://test.mosquitto.org:8081/mqtt'];
+const RELAY_TOPIC='gal-hameatzben-c4q/v2/', RELAY_GAP=90;
+const RELAY={ok:null,probing:null};
+const _te=new TextEncoder(), _td=new TextDecoder();
+function mqStr(s){ const b=typeof s==='string'?_te.encode(s):s; const o=new Uint8Array(2+b.length); o[0]=b.length>>8; o[1]=b.length&255; o.set(b,2); return o; }
+function mqCat(parts){ let n=0; for(const p of parts) n+=p.length; const o=new Uint8Array(n); let i=0; for(const p of parts){ o.set(p,i); i+=p.length; } return o; }
+function mqPacket(first,body){
+  const len=[]; let n=body.length; do{ let d=n%128; n=Math.floor(n/128); if(n>0) d|=128; len.push(d); }while(n>0);
+  return mqCat([Uint8Array.of(first,...len),body]);
+}
+// A minimal MQTT 3.1.1 client: connect (with a last message the server sends if we vanish), subscribe, publish, ping.
+function mqConnect(url,id,will){
+  return new Promise((resolve,reject)=>{
+    let ws, done=false, buf=new Uint8Array(0), pid=1, onMsg=null, onClose=null, pingI=null;
+    const fail=e=>{ if(done) return; done=true; clearTimeout(to); try{ ws&&ws.close(); }catch(x){} reject(e); };
+    const to=setTimeout(()=>fail('timeout'),7000);
+    try{ ws=new WebSocket(url,'mqtt'); }catch(e){ fail('open'); return; }
+    ws.binaryType='arraybuffer';
+    const raw=p=>{ try{ if(ws.readyState===1) ws.send(p); }catch(e){} };
+    const api={
+      url, get open(){ return ws.readyState===1; },
+      sub(topic){ raw(mqPacket(0x82,mqCat([Uint8Array.of(pid>>8,pid&255),mqStr(topic),Uint8Array.of(0)]))); pid=pid%65000+1; },
+      pub(topic,text){ raw(mqPacket(0x30,mqCat([mqStr(topic),_te.encode(text)]))); },
+      onMessage(f){ onMsg=f; }, onClose(f){ onClose=f; },
+      close(){ clearInterval(pingI); raw(Uint8Array.of(0xE0,0)); setTimeout(()=>{ try{ ws.close(); }catch(e){} },60); }
+    };
+    ws.onopen=()=>{
+      const flags=0x02|(will?0x04:0);
+      const parts=[mqStr('MQTT'),Uint8Array.of(4,flags,0,30),mqStr(id)];
+      if(will) parts.push(mqStr(will.topic),mqStr(_te.encode(will.text)));
+      raw(mqPacket(0x10,mqCat(parts)));
+    };
+    ws.onmessage=ev=>{
+      const chunk=new Uint8Array(ev.data); buf=buf.length?mqCat([buf,chunk]):chunk;
+      for(;;){
+        if(buf.length<2) return;
+        let mul=1, len=0, i=1, b;
+        do{ if(i>=buf.length) return; b=buf[i++]; len+=(b&127)*mul; mul*=128; }while(b&128 && i<6);
+        if(buf.length<i+len) return;
+        const type=buf[0]>>4, flags=buf[0]&15, body=buf.subarray(i,i+len); buf=buf.slice(i+len);
+        if(type===2){
+          if(body[1]===0){ if(!done){ done=true; clearTimeout(to); pingI=setInterval(()=>raw(Uint8Array.of(0xC0,0)),20000); resolve(api); } }
+          else fail('refused');
+        } else if(type===3){
+          const tl=(body[0]<<8)|body[1], topic=_td.decode(body.subarray(2,2+tl)); let p=2+tl; if((flags>>1)&3) p+=2;
+          if(onMsg){ try{ onMsg(topic,_td.decode(body.subarray(p))); }catch(e){} }
+        }
+      }
+    };
+    ws.onerror=()=>{};
+    ws.onclose=()=>{ clearInterval(pingI); if(!done) fail('closed'); else if(onClose) onClose(api); };
+  });
+}
+function relayUrls(){ return (window.__galRelay&&window.__galRelay.length)?window.__galRelay:RELAY_URLS; }
+function relayId(){ const a='abcdefghijkmnpqrstuvwxyz23456789'; let s='p-'; for(let i=0;i<10;i++) s+=a[(Math.random()*a.length)|0]; return s; }
+// Connect to up to two servers: all are tried at once, and the first two to answer (in list order when both do) are kept.
+function relayOpen(id,will,skip){
+  const urls=relayUrls().filter(u=>!(skip&&skip.includes(u)));
+  return new Promise(resolve=>{
+    const got=new Array(urls.length).fill(undefined); let settled=false, graceT=null, grace=false;
+    const finish=()=>{
+      if(settled) return;
+      // once one server is in, the second gets 1.5 s more and no longer
+      if(!graceT && got.some(c=>c)) graceT=setTimeout(()=>{ grace=true; finish(); },1500);
+      const ok=got.filter(c=>c&&c!==null), pending=got.some(c=>c===undefined);
+      // both of the first two answered, or nothing left to wait for, or two servers are in
+      const firstTwoDone=got.slice(0,2).every(c=>c!==undefined);
+      if(!(ok.length>=2||firstTwoDone&&ok.length>=1||!pending||grace&&ok.length)) return;
+      settled=true; clearTimeout(graceT); const keep=ok.slice(0,2);
+      for(const c of ok) if(!keep.includes(c)) c.close();
+      resolve(keep);
+    };
+    urls.forEach((u,i)=>{ mqConnect(u,id+'-'+Math.random().toString(36).slice(2,8),will).then(c=>{ if(settled){ c.close(); return; } got[i]=c; finish(); },()=>{ got[i]=null; finish(); }); });
+  });
+}
+function relayProbe(){
+  if(RELAY.ok!==null) return Promise.resolve(RELAY.ok);
+  if(RELAY.probing) return RELAY.probing;
+  RELAY.probing=relayOpen(relayId(),null).then(cs=>{ cs.forEach(c=>c.close()); RELAY.ok=cs.length>0; RELAY.probing=null; return RELAY.ok; });
+  return RELAY.probing;
+}
+// The same calls the play-together code uses (presence, peers, onConnection, leave), carried over the relay.
+function relayJoin(code){
+  return new Promise((resolve,reject)=>{
+    const myId=relayId(), base=RELAY_TOPIC+code+'/', mineT=base+myId;
+    const others=new Map(), seqs=new Map(), connFns=new Set();
+    let mine={}, snap=Object.freeze([]), left=false, live=false, seq=0, lastSent=0, sendT=null, conns=[];
+    function rebuild(){
+      const list=[{peer:myId,by:null,isMe:true,sameTab:true,kind:'viewer',guest:false,presence:mine,updatedAt:Date.now()}];
+      for(const [id,v] of others) list.push({peer:id,by:null,isMe:false,sameTab:false,kind:'viewer',guest:false,presence:v.p,updatedAt:v.t});
+      snap=Object.freeze(list);
+    }
+    function setLive(){ const v=!left&&conns.some(c=>c.open); if(live===v) return; live=v; for(const f of connFns){ try{ f(v); }catch(e){} } }
+    function sendNow(){ sendT=null; lastSent=performance.now(); const txt=JSON.stringify({s:++seq,p:mine}); for(const c of conns) c.pub(mineT,txt); }
+    function queue(){ if(left||sendT) return; const wait=RELAY_GAP-(performance.now()-lastSent); if(wait<=0) sendNow(); else sendT=setTimeout(sendNow,wait); }
+    function onMsg(topic,text){
+      if(left||topic.indexOf(base)!==0) return;
+      const id=topic.slice(base.length); if(!id||id===myId||id.length>40) return;
+      if(!text){ if(others.delete(id)){ seqs.delete(id); rebuild(); } return; }
+      let d; try{ d=JSON.parse(text); }catch(e){ return; }
+      if(!d||typeof d!=='object') return;
+      const last=seqs.get(id)||0; if(typeof d.s!=='number'||d.s<=last) return; seqs.set(id,d.s);
+      if(d.p===undefined){ const o=others.get(id); if(o) o.t=Date.now(); return; }
+      if(!p2pValid(d.p)) return;
+      others.set(id,{p:Object.freeze(d.p),t:Date.now()}); rebuild();
+    }
+    const ka=setInterval(()=>{
+      if(left){ clearInterval(ka); return; }
+      const now=Date.now();
+      if(performance.now()-lastSent>1800){ lastSent=performance.now(); const txt=JSON.stringify({s:++seq}); for(const c of conns) c.pub(mineT,txt); }
+      let ch=false; for(const [id,v] of others) if(now-v.t>P2P_IDLE){ others.delete(id); seqs.delete(id); ch=true; }
+      if(ch) rebuild();
+      // a server that dropped us is dialled again in the background
+      if(conns.length<2 && !redialing && Date.now()-lastDial>(conns.length?20000:3000)) redial();
+    },2000);
+    let redialing=false, lastDial=Date.now();
+    function attach(c){ c.onMessage(onMsg); c.onClose(()=>{ conns=conns.filter(x=>x!==c); setLive(); }); c.sub(base+'+'); conns.push(c); }
+    function redial(){
+      redialing=true; lastDial=Date.now();
+      relayOpen(myId,{topic:mineT,text:''},conns.map(c=>c.url)).then(cs=>{
+        redialing=false;
+        if(left){ cs.forEach(c=>c.close()); return; }
+        for(const c of cs){ if(conns.length<2&&!conns.some(x=>x.url===c.url)) attach(c); else c.close(); }
+        setLive(); if(conns.length) queue();
+      });
+    }
+    relayOpen(myId,{topic:mineT,text:''}).then(cs=>{
+      if(!cs.length){ reject({code:'unavailable'}); clearInterval(ka); return; }
+      cs.forEach(attach); rebuild(); setLive(); resolve(api);
+    });
+    const api={
+      name:base,
+      presence(patch){
+        if(left) return Promise.resolve();
+        for(const k in patch){ if(patch[k]===null) delete mine[k]; else mine[k]=patch[k]; }
+        mine=JSON.parse(JSON.stringify(mine)); rebuild(); queue();
+        return Promise.resolve();
+      },
+      peers(){ return snap; },
+      onPeers(){ return ()=>{}; },
+      connected(){ return live; },
+      dialing(){ return false; },
+      onConnection(fn){ connFns.add(fn); setTimeout(()=>{ try{ fn(live); }catch(e){} },0); return ()=>connFns.delete(fn); },
+      emit(){ return Promise.resolve(); }, on(){ return ()=>{}; },
+      leave(){ left=true; clearInterval(ka); clearTimeout(sendT); for(const c of conns){ c.pub(mineT,''); c.close(); } conns=[]; return Promise.resolve(); }
+    };
+  });
+}
 function dualGroup(a,b,code){
   let pick=null, pickT=0;
   const hostOn=g=>{ try{ return g.peers().some(p=>!(p.isMe&&p.sameTab)&&p.presence&&p.presence.r==='host'&&p.presence.c===code); }catch(e){ return false; } };
@@ -8860,7 +9016,7 @@ async function netJoin(code,asHost){
   // The direct connection comes first wherever it works, because it lets anyone in; the room is the fallback.
   if(P2P.ok){
     for(let k=0;k<3&&!grp;k++){
-      try{ grp=await p2pJoin(code,asHost); via='p2p'; }
+      try{ grp=RELAY.ok?await relayJoin(code):await p2pJoin(code,asHost); via='p2p'; }
       catch(e){ err=e; if(asHost&&e&&e.code==='taken'){ code=genCode(); continue; } if(k<2&&e&&(e.code==='unavailable'||e.code==='timeout')){ await new Promise(r=>setTimeout(r,1500)); continue; } break; }
     }
   }
@@ -9797,7 +9953,7 @@ function boot(data){
   netInit();
 }
 try{ window.claude?.hot?.snapshot?.(()=>({muted})); }catch(e){}
-window.__gal={scene,renderer,camera,pressFire,releaseFire,chargeLevel,HOLD,sprinklers,ENV,PK,GIANT,deploySprinkler,G,player,get enemies(){ return enemies; },joy,mouse,keys,startGame,showMenu,setupWorld,update,updateCamera,attract,fire,fireLook,lookTarget,aimTarget,lockOn,hitEnemy,endGame,setPaused,projs,bananas,waves,inWave,WORLDS,saveProg,NET,netJoin,netLeave,netStartRound,netBackToGroup,netTick,updateRemotes,renderWorldCards,get W(){ return W; },get WP(){ return WP; },PROF,DIFF,DF,dash,pups,mines,ENV,trapEnemy,deployMine,rainClouds,vortices,windState,RIV,hoseBeam,warns,spawnCloud,spawnVortex,setSpicy,spawnPup,applyPower,POWERS,popNum,comboHit,confettiBurst,conf,MUS,setSong,setMusic,openShop,closeShop,HATS,roundReward,saveProfile,loadProfile,simDt,shieldBubble,get AC(){ return AC; },get master(){ return master; },sfx};
+window.__gal={scene,renderer,camera,pressFire,releaseFire,chargeLevel,HOLD,sprinklers,ENV,PK,GIANT,deploySprinkler,G,player,get enemies(){ return enemies; },joy,mouse,keys,startGame,showMenu,setupWorld,update,updateCamera,attract,fire,fireLook,lookTarget,aimTarget,lockOn,hitEnemy,endGame,setPaused,projs,bananas,waves,inWave,WORLDS,saveProg,NET,RELAY,P2P,netJoin,netLeave,netStartRound,netBackToGroup,netTick,updateRemotes,renderWorldCards,get W(){ return W; },get WP(){ return WP; },PROF,DIFF,DF,dash,pups,mines,ENV,trapEnemy,deployMine,rainClouds,vortices,windState,RIV,hoseBeam,warns,spawnCloud,spawnVortex,setSpicy,spawnPup,applyPower,POWERS,popNum,comboHit,confettiBurst,conf,MUS,setSong,setMusic,openShop,closeShop,HATS,roundReward,saveProfile,loadProfile,simDt,shieldBubble,get AC(){ return AC; },get master(){ return master; },sfx};
 window.claude?.hot?.ready ? window.claude.hot.ready(boot) : boot(window.claude?.hot?.data ?? {});
 })();
 </script>
